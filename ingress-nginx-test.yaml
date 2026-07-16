@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ingress-nginx-test
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://kubernetes.github.io/ingress-nginx
+    chart: ingress-nginx
+    targetRevision: 4.10.1
+    helm:
+      releaseName: ingress-nginx-test
+      values: |
+        controller:
+          replicaCount: 2
+          ingressClass: nginx-test
+          ingressClassResource:
+            name: nginx-test
+            controllerValue: k8s.io/ingress-nginx-test
+            default: false
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: ingress-nginx
+                  topologyKey: kubernetes.io/hostname
+          service:
+            externalTrafficPolicy: Local
+            annotations:
+              metallb.io/loadBalancerIPs: 192.168.253.69
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ingress-nginx-test
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      jsonPointers:
+        - /webhooks/0/clientConfig/caBundle
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
