@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/RomanKalsin/metallb.git
+    repoURL: https://gitlab.sadkomed.ru/k8s/metallb.git
     targetRevision: main
     path: sadkomed_bgp
   destination:
