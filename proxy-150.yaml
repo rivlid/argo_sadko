@@ -1,7 +1,7 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: sadko-proxy
+  name: proxy-150
   namespace: argocd
 spec:
   project: default
