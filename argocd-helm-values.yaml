@@ -1,0 +1,23 @@
+configs:
+  params:
+    server.insecure: true
+  cm:
+    resource.exclusions: |
+      - apiGroups:
+          - coordination.k8s.io
+        kinds:
+          - Lease
+      - apiGroups:
+          - authentication.k8s.io
+          - authorization.k8s.io
+        kinds:
+          - SelfSubjectReview
+          - TokenReview
+          - LocalSubjectAccessReview
+          - SelfSubjectAccessReview
+          - SelfSubjectRulesReview
+          - SubjectAccessReview
+redis:
+  image:
+    repository: docker.io/library/redis
+    tag: 7.0-alpine
