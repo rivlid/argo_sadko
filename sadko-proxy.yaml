@@ -14,6 +14,11 @@ spec:
   destination: 
     server: https://kubernetes.default.svc
     namespace: default
+  ignoreDifferences:
+    - group: discovery.k8s.io
+      kind: EndpointSlice
+      jqPathExpressions:
+        - .endpoints[].conditions
   syncPolicy:
     automated:
       prune: true
