@@ -10,7 +10,9 @@ spec:
     targetRevision: main
     path: sadko_first
     helm:
-      releaseName: sadko-proxy
+      releaseName: proxy-150
+      valueFiles:
+        - values-proxy-150.yaml
   destination: 
     server: https://kubernetes.default.svc
     namespace: default
