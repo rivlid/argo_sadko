@@ -1,0 +1,46 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ingress-nginx-20
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.sadkomed.ru/k8s/ingress-nginx.git
+    targetRevision: main
+    path: .
+    helm:
+      releaseName: ingress-nginx-20
+      values: |
+        controller:
+          replicaCount: 3
+          ingressClass: nginx-20
+          ingressClassResource:
+            name: nginx-20
+            controllerValue: k8s.io/ingress-nginx-20
+            default: false
+          affinity:
+            podAntiAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: ingress-nginx
+                  topologyKey: kubernetes.io/hostname
+          service:
+            externalTrafficPolicy: Local
+            annotations:
+              metallb.io/loadBalancerIPs: 192.168.69.20
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: ingress-nginx-20
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      jsonPointers:
+        - /webhooks/0/clientConfig/caBundle
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
