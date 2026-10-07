@@ -232,3 +232,61 @@ kubectl get csidriver,sc | grep truenas
 - **Запуск чарта без ArgoCD** (новый кластер, DR — НЕ боевой кластер под Арго):
   `helm install proxy-150 ./sadko_first -n default -f values-proxy-150.yaml`;
   предпросмотр рендера: `helm template ... -f <values-файл>`.
+
+## democratic-csi (TrueNAS iSCSI)
+
+Драйвер `freenas-api-iscsi` (только API, без SSH), TrueNAS `f99-fs02` (10.69.0.251),
+пул `ssd` (зеркало 2× Intel D3-S4620), тома в `ssd/k8s/iscsi/v`.
+Ресурсы: `deploy/truenas-iscsi-democratic-csi-controller` (1 шт),
+`ds/truenas-iscsi-democratic-csi-node` (только воркеры — у мастеров taint, iSCSI-клиента там нет).
+
+**Что и зачем в values (`truenas-iscsi.yaml`):**
+
+| Ключ | Зачем |
+|------|-------|
+| `driver.existingConfigSecret` | конфиг драйвера с API-ключом не в git (см. 3a) |
+| `controller/node.driver.image.tag: v1.9.5` | не `latest` — обновление только осознанно |
+| `controller.externalSnapshotter.enabled: false` | VolumeSnapshot CRD/контроллера в кластере нет — sidecar сыпал бы ошибками |
+| `volumeSnapshotClasses: []` | то же |
+
+**Тонкости:**
+
+- `zvolBlocksize` (8K, под страницы Postgres) задаётся **на весь драйвер** в секрете,
+  не на StorageClass. Меняется только для новых томов; существующие — миграцией.
+- Образы: драйвер с `ghcr.io`, sidecar'ы с `registry.k8s.io`. Первый деплой/обновление
+  образа тянется на все 21 ноду из интернета — ~15–20 мин в `ContainerCreating`, это норма.
+- Расширение PVC: zvol растёт сразу, ФС в поде — через 1–3 мин (kubelet, `resize2fs`).
+  Пока не прошло — PVC показывает старый размер. Под не перезапускается.
+- Удаление PVC (`reclaimPolicy: Delete`) удаляет zvol, iSCSI target и extent на TrueNAS.
+- **TrueNAS 25.04 отзывает API-ключ при обращении по http** — только `https` + `allowInsecure`.
+- **REST API TrueNAS удаляется в 26.04.** Перед апгрейдом TrueNAS до 26.x — сначала новая
+  версия democratic-csi (или переход на truenas-csi), иначе драйвер перестанет работать.
+  https://github.com/democratic-csi/democratic-csi/issues/509
+- Обновить чарт: на ansible13 `helm pull democratic-csi/democratic-csi --version <новая> --untar`
+  → закоммитить поверх в `k8s/democratic-csi.git`.
+
+**Эталонные замеры** (2026-10-07, fio из пода, 8k randwrite QD1 `--sync=dsync`):
+
+| | p50 | p99 | IOPS |
+|---|---|---|---|
+| PVC `volumeMode: Block` | 0,55 мс | 1,71 мс | 1693 |
+| PVC ext4, файл предварительно записан | 0,59 мс | 1,86 мс | 1565 |
+| seq write 1M QD32 | — | — | ~420 МБ/с (предел записи SSD-зеркала) |
+
+Грабли при тестах: fio по умолчанию создаёт файл через `fallocate` → блоки ext4
+`unwritten`, первая запись в каждый блок коммитит журнал → два режима (0,6 / 1,7 мс),
+p99 хуже. Перед тестом файл заполнять записью (`--fallocate=none`, seq write). `--sync=1`
+(O_SYNC) на ext4 ещё в ~3 раза хуже — Postgres так не пишет, мерить `--sync=dsync`.
+
+**TrueNAS — сетевая карта:** `ens4f0np0` (Intel i40e). При дефолтном RX ring 512 были
+потери (`rx_missed_errors`). Поднято до 4096: `ethtool -G ens4f0np0 rx 4096 tx 4096`,
+продублировано в System → Advanced → Init/Shutdown Scripts (Post Init). Контроль:
+`ethtool -S ens4f0np0 | grep -E 'rx_missed_errors|port.rx_discards'` — под нагрузкой не
+должны расти (база на 2026-10-07: 72291 / 2880). Растут — поднять до 8160 (максимум).
+
+**Риски (не решены):**
+
+- **Бэкапов нет** — нет Periodic Snapshot Tasks и репликации для `ssd/k8s`. Пул — одно
+  зеркало. До боевых БД: рекурсивные снапшоты `ssd/k8s` + репликация на второй TrueNAS.
+- TrueNAS — единая точка отказа: его перезагрузка подвешивает все поды с томами.
+- Только RWO. Для RWX нужен отдельный NFS-драйвер.
