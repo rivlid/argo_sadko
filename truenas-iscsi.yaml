@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: truenas-iscsi
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.sadkomed.ru/k8s/democratic-csi.git
+    targetRevision: main
+    path: .
+    helm:
+      releaseName: truenas-iscsi
+      values: |
+        csiDriver:
+          name: "org.democratic-csi.truenas-iscsi"
+        storageClasses:
+          - name: truenas-iscsi
+            defaultClass: false
+            reclaimPolicy: Delete
+            volumeBindingMode: WaitForFirstConsumer
+            allowVolumeExpansion: true
+            parameters:
+              fsType: ext4
+              detachedVolumesFromSnapshots: "false"
+            mountOptions: []
+            secrets:
+              provisioner-secret:
+              controller-publish-secret:
+              node-stage-secret:
+              node-publish-secret:
+              controller-expand-secret:
+        volumeSnapshotClasses: []
+        driver:
+          existingConfigSecret: truenas-iscsi-driver-config
+          config:
+            driver: freenas-api-iscsi
+        controller:
+          externalSnapshotter:
+            enabled: false
+          driver:
+            image:
+              tag: v1.9.5
+        node:
+          driver:
+            image:
+              tag: v1.9.5
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: democratic-csi
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: privileged
+    syncOptions:
+      - CreateNamespace=true

@@ -19,6 +19,7 @@ git (gitlab.sadkomed.ru) ──> ArgoCD ──> кластер
 | `ingress-nginx.yaml`     | Application: прод ingress-контроллер, class `nginx`, IP 192.168.253.150 |
 | `ingress-nginx-test.yaml`| Application: тестовый контроллер, class `nginx-test`, IP 192.168.253.69 |
 | `proxy-150.yaml`         | Application: реверс-прокси прод-контроллера (чарт `sadko_first`, values-файл `values-proxy-150.yaml`) |
+| `truenas-iscsi.yaml`     | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass `truenas-iscsi` (RWO, не default) |
 
 ## Связанные репозитории (gitlab.sadkomed.ru)
 
@@ -29,6 +30,10 @@ git (gitlab.sadkomed.ru) ──> ArgoCD ──> кластер
 - `k8s/helm.git` — чарт `sadko_first`: реверс-прокси, каждый = Service +
   EndpointSlice + Ingress.
 - репа `metallb` — манифесты MetalLB + конфигурация BGP (пулы, peer, advertisement).
+- `k8s/democratic-csi.git` — вендоренный чарт democratic-csi **0.15.1**
+  (`democratic-csi.github.io` — тот же GitHub Pages CDN). Образ драйвера
+  v1.9.5 задан в `truenas-iscsi.yaml`. Обновление: `helm pull --version <новая> --untar`
+  на ansible13 → закоммитить поверх.
 
 ## Устройство чарта sadko_first: один values-файл = один контроллер
 
@@ -115,6 +120,63 @@ Repositories → Connect repo (https + deploy token), либо секретом 
 kubectl create secret tls sadkomed-tls -n default --cert=fullchain.pem --key=privkey.pem
 ```
 
+## 3a. Секрет democratic-csi (API-ключ TrueNAS)
+
+Конфиг драйвера содержит API-ключ TrueNAS, поэтому в git его нет — Secret
+создаётся руками до синка `truenas-iscsi`. Файл с ключом создавать вне git-реп
+и удалить сразу после создания секрета.
+
+```bash
+kubectl create namespace democratic-csi
+kubectl label namespace democratic-csi pod-security.kubernetes.io/enforce=privileged
+kubectl -n democratic-csi create secret generic truenas-iscsi-driver-config \
+  --from-file=driver-config-file.yaml=/root/driver-config.yaml && rm /root/driver-config.yaml
+```
+
+Шаблон `driver-config.yaml` (подставить ключ; `{{ parameters... }}` — шаблоны
+самого democratic-csi, оставить как есть):
+
+```yaml
+driver: freenas-api-iscsi
+instance_id:
+httpConnection:
+  protocol: https
+  host: 10.69.0.251
+  port: 443
+  apiKey: "<API_KEY>"
+  allowInsecure: true
+zfs:
+  datasetProperties:
+    "org.freenas:description": "{{ parameters.[csi.storage.k8s.io/pvc/namespace] }}/{{ parameters.[csi.storage.k8s.io/pvc/name] }}"
+  datasetParentName: ssd/k8s/iscsi/v
+  detachedSnapshotsDatasetParentName: ssd/k8s/iscsi/s
+  zvolCompression:
+  zvolDedup:
+  zvolEnableReservation: false      # тонкие тома; пул защищён ssd/_reserve
+  zvolBlocksize: 8K                 # на весь драйвер, не на StorageClass
+iscsi:
+  targetPortal: "10.69.0.251:3260"
+  targetPortals: []
+  interface:
+  namePrefix: csi-
+  nameSuffix: "-k8s"
+  targetGroups:
+    - targetGroupPortalGroup: 1      # ID из midclt, не из UI
+      targetGroupInitiatorGroup: 2
+      targetGroupAuthType: None
+      targetGroupAuthGroup:
+  extentCommentTemplate: "{{ parameters.[csi.storage.k8s.io/pvc/namespace] }}/{{ parameters.[csi.storage.k8s.io/pvc/name] }}"
+  extentInsecureTpc: true
+  extentXenCompat: false
+  extentDisablePhysicalBlocksize: false
+  extentBlocksize: 4096
+  extentRpm: "SSD"
+  extentAvailThreshold: 0
+```
+
+Важно: TrueNAS 25.04 отзывает API-ключ при использовании по http — только `https` +
+`allowInsecure: true`.
+
 ## 4. Применение Application-ов (порядок важен)
 
 ```bash
@@ -122,6 +184,7 @@ kubectl apply -f metallb.yaml              # 1. MetalLB: пулы, BGP-пири�
 kubectl apply -f ingress-nginx.yaml        # 2. прод-контроллер -> 192.168.253.150
 kubectl apply -f ingress-nginx-test.yaml   # 3. тестовый -> 192.168.253.69
 kubectl apply -f proxy-150.yaml            # 4. все прокси прод-контроллера
+kubectl apply -f truenas-iscsi.yaml        # 5. democratic-csi (нужен секрет из 3a)
 ```
 
 На чистом кластере перед шагом 2 создать namespace (в Application прода нет
@@ -135,6 +198,8 @@ kubectl get svc -n ingress-nginx                        # EXTERNAL-IP 192.168.25
 kubectl get svc -n ingress-nginx-test                   # EXTERNAL-IP 192.168.253.69
 kubectl get ingress -n default | wc -l                  # ~60 ингрессов
 curl -kI https://192.168.253.150 -H "Host: grafana.sadkomed.ru"
+kubectl -n democratic-csi get pods -o wide              # 1 controller + node на каждом воркере
+kubectl get csidriver,sc | grep truenas
 ```
 
 ---
