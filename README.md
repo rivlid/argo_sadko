@@ -28,7 +28,7 @@ argo_sadko/
 | `infra/ingress-nginx-69.yaml` | Application: **тестовый** контроллер, class `nginx-69`, IP 192.168.69.69, 2 реплики |
 | `infra/proxy-20.yaml` | Application: маршруты прод-контроллера (чарт `sadko_first`, `values-proxy-20.yaml`) |
 | `infra/proxy-69-69.yaml` | Application: маршруты тестового контроллера (чарт `sadko_first`, `values-proxy-69-69.yaml`) |
-| `infra/truenas-iscsi.yaml` | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass `truenas-iscsi` (RWO, не default) |
+| `infra/truenas-iscsi.yaml` | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass-ы `truenas-iscsi` (Delete) и `truenas-iscsi-retain` (Retain, для БД); оба RWO, не default |
 
 ### legacy/ — не применять
 
@@ -337,6 +337,29 @@ kubectl get csidriver,sc | grep truenas
 | `controller/node.driver.image.tag: v1.9.5` | не `latest` — обновление только осознанно |
 | `controller.externalSnapshotter.enabled: false` | VolumeSnapshot CRD/контроллера в кластере нет — sidecar сыпал бы ошибками |
 | `volumeSnapshotClasses: []` | то же |
+| `storageClasses` | два класса, отличаются только `reclaimPolicy` — см. ниже |
+
+**StorageClass-ы:**
+
+| Класс | reclaimPolicy | Для чего | Что при удалении PVC |
+|-------|---------------|----------|----------------------|
+| `truenas-iscsi` | Delete | всё, что не жалко: кэши, временные данные, тесты | zvol, iSCSI target и extent на TrueNAS удаляются сразу |
+| `truenas-iscsi-retain` | Retain | базы данных и прочие данные, которые нельзя потерять | PV остаётся в статусе `Released`, zvol на TrueNAS не трогается |
+
+PVC удаляется не только руками: prune в Argo, удаление Application каскадом, удаление
+namespace — всё это при `Delete` уничтожает данные. Поэтому для БД — только `-retain`.
+
+Очистка после удаления PVC на `truenas-iscsi-retain` (когда данные точно не нужны):
+
+```bash
+kubectl get pv | grep Released                  # найти освободившиеся тома
+kubectl describe pv <имя>                       # VolumeHandle = имя zvol на TrueNAS
+kubectl delete pv <имя>
+```
+
+После этого на TrueNAS удалить руками zvol `ssd/k8s/iscsi/v/<VolumeHandle>` и
+соответствующие iSCSI target / extent (Shares → Block (iSCSI)). Повторно подключить
+`Released` PV к новому PVC можно, убрав из него `spec.claimRef`.
 
 **Тонкости:**
 
@@ -346,7 +369,10 @@ kubectl get csidriver,sc | grep truenas
   образа тянется на все 21 ноду из интернета — ~15–20 мин в `ContainerCreating`, это норма.
 - Расширение PVC: zvol растёт сразу, ФС в поде — через 1–3 мин (kubelet, `resize2fs`).
   Пока не прошло — PVC показывает старый размер. Под не перезапускается.
-- Удаление PVC (`reclaimPolicy: Delete`) удаляет zvol, iSCSI target и extent на TrueNAS.
+- Удаление PVC на `truenas-iscsi` (`reclaimPolicy: Delete`) удаляет zvol, iSCSI target и
+  extent на TrueNAS; на `truenas-iscsi-retain` — ничего не удаляет (см. «StorageClass-ы»).
+- `reclaimPolicy` у StorageClass неизменяем — сменить политику существующего тома можно
+  только на PV: `kubectl patch pv <имя> -p '{"spec":{"persistentVolumeReclaimPolicy":"Retain"}}'`.
 - **TrueNAS 25.04 отзывает API-ключ при обращении по http** — только `https` + `allowInsecure`.
 - **REST API TrueNAS удаляется в 26.04.** Перед апгрейдом TrueNAS до 26.x — сначала новая
   версия democratic-csi (или переход на truenas-csi), иначе драйвер перестанет работать.
