@@ -34,13 +34,13 @@ spec:
           command: ["sh", "-c", "until pg_isready -h postgres -U postgres -d planka; do sleep 2; done"]
       containers:
         - name: planka
-          image: ghcr.io/plankanban/planka:1.26.3
+          image: ghcr.io/plankanban/planka:2.2.1
           envFrom:
             - configMapRef:
                 name: planka-config   # BASE_URL — из overlay
           env:
             - name: TRUST_PROXY
-              value: "1"
+              value: "true"
             - name: PG_PASSWORD
               valueFrom:
                 secretKeyRef:
@@ -76,14 +76,7 @@ spec:
               memory: 1Gi
           volumeMounts:
             - name: data
-              mountPath: /app/public/user-avatars
-              subPath: user-avatars
-            - name: data
-              mountPath: /app/public/project-background-images
-              subPath: project-background-images
-            - name: data
-              mountPath: /app/private/attachments
-              subPath: attachments
+              mountPath: /app/data
       volumes:
         - name: data
           persistentVolumeClaim:
