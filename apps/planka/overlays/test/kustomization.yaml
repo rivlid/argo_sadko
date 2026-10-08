@@ -10,4 +10,4 @@ configMapGenerator:
 # 0 — пока не залиты данные; после заливки поменять на 1
 replicas:
   - name: planka
-    count: 0
+    count: 1
