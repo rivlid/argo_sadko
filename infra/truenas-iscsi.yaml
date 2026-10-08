@@ -30,6 +30,22 @@ spec:
               node-stage-secret:
               node-publish-secret:
               controller-expand-secret:
+          # Не удаляются автоматом для БД
+          - name: truenas-iscsi-retain
+            defaultClass: false
+            reclaimPolicy: Retain
+            volumeBindingMode: WaitForFirstConsumer
+            allowVolumeExpansion: true
+            parameters:
+              fsType: ext4
+              detachedVolumesFromSnapshots: "false"
+            mountOptions: []
+            secrets:
+              provisioner-secret:
+              controller-publish-secret:
+              node-stage-secret:
+              node-publish-secret:
+              controller-expand-secret:
         volumeSnapshotClasses: []
         driver:
           existingConfigSecret: truenas-iscsi-driver-config
