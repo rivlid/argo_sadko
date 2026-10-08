@@ -12,14 +12,59 @@ git (gitlab.sadkomed.ru) ──> ArgoCD ──> кластер
 
 ## Состав репы
 
-| Файл                     | Что это                                                        |
-|--------------------------|----------------------------------------------------------------|
-| `argocd-helm-values.yaml`| Helm values для установки/обновления самого ArgoCD             |
-| `metallb.yaml`           | Application: MetalLB целиком (репа `metallb`, path `sadkomed_bgp`) |
-| `ingress-nginx.yaml`     | Application: прод ingress-контроллер, class `nginx`, IP 192.168.253.150 |
-| `ingress-nginx-test.yaml`| Application: тестовый контроллер, class `nginx-test`, IP 192.168.253.69 |
-| `proxy-150.yaml`         | Application: реверс-прокси прод-контроллера (чарт `sadko_first`, values-файл `values-proxy-150.yaml`) |
-| `truenas-iscsi.yaml`     | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass `truenas-iscsi` (RWO, не default) |
+```
+argo_sadko/
+├── README.md
+├── argocd-helm-values.yaml   # values для установки/обновления самого ArgoCD
+├── infra/                    # Application-ы инфраструктуры — применены в кластере
+└── legacy/                   # старая схема 192.168.253.x — НЕ ПРИМЕНЯТЬ
+```
+
+| Файл | Что это |
+|------|---------|
+| `argocd-helm-values.yaml` | Helm values для установки/обновления самого ArgoCD |
+| `infra/metallb.yaml` | Application `metallb-config`: MetalLB целиком (репа `metallb`, path `sadkomed_bgp`) |
+| `infra/ingress-nginx-20.yaml` | Application: **прод** ingress-контроллер, class `nginx-20`, IP 192.168.69.20, 3 реплики |
+| `infra/ingress-nginx-69.yaml` | Application: **тестовый** контроллер, class `nginx-69`, IP 192.168.69.69, 2 реплики |
+| `infra/proxy-20.yaml` | Application: маршруты прод-контроллера (чарт `sadko_first`, `values-proxy-20.yaml`) |
+| `infra/proxy-69-69.yaml` | Application: маршруты тестового контроллера (чарт `sadko_first`, `values-proxy-69-69.yaml`) |
+| `infra/truenas-iscsi.yaml` | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass `truenas-iscsi` (RWO, не default) |
+
+### legacy/ — не применять
+
+`legacy/ingress-nginx.yaml`, `legacy/ingress-nginx-test.yaml`, `legacy/proxy-150.yaml`,
+`legacy/proxy-69.yaml` — первая схема (контроллеры на 192.168.253.150 / 192.168.253.69,
+классы `nginx` / `nginx-test`). В кластере **не применены**, хранятся как справка.
+`kubectl apply -f legacy/` поднимет второй прод-контроллер и продублирует все прокси.
+Связанные хвосты той же схемы: values-файлы `values-proxy-150.yaml` / `values-proxy-69.yaml`
+в чарте `sadko_first` и пул `pool-253-150` в репе metallb.
+
+## Текущее состояние кластера (2026-10-08)
+
+Application-ы в ArgoCD (все Synced/Healthy): `ingress-nginx-20`, `ingress-nginx-69`,
+`metallb-config`, `proxy-20`, `proxy-69-69`, `truenas-iscsi`.
+
+| Контур | Контроллер | Класс | IP (пул MetalLB) | Маршруты |
+|--------|-----------|-------|------------------|----------|
+| прод | `ingress-nginx-20` | `nginx-20` | 192.168.69.20 (`pool-69-20`) | `proxy-20` → `values-proxy-20.yaml`: ~60 внешних прокси + internal (headlamp, grafana-k8s, argocd) |
+| тест | `ingress-nginx-69` | `nginx-69` | 192.168.69.69 (`pool-69-69`) | `proxy-69-69` → `values-proxy-69-69.yaml`: sema, elma-test + internal (argo-test) |
+
+### Как связаны MetalLB, контроллер и маршруты
+
+Явных ссылок «пул ↔ контроллер ↔ прокси» нет — всё вяжется неявно:
+
+1. **Контроллер → пул MetalLB — по IP.** Аннотация `metallb.io/loadBalancerIPs: 192.168.69.20`
+   на Service контроллера; MetalLB сам находит пул, в `addresses` которого попадает адрес.
+   Не попал ни в один пул → `EXTERNAL-IP <pending>`.
+2. **Пул → BGP-анонс — по имени пула** в `BGPAdvertisement bgp-253.spec.ipAddressPools`.
+   Пула нет в списке → IP выдан, но снаружи недоступен.
+3. **Ingress → контроллер — по имени IngressClass:** `ingressClassName` в values-файле
+   маршрутов = `ingressClassResource.name` в values контроллера. Каждый контроллер берёт
+   только свой IngressClass по `controllerValue` (`k8s.io/ingress-nginx-20` / `-69`).
+4. **Ingress → Service** — по имени, в namespace `default`.
+5. **Service → backend:** для `proxies:` — EndpointSlice с меткой
+   `kubernetes.io/service-name: <имя>-external` и IP внешнего сервера; для `internal:` —
+   Service `ExternalName` на `<serviceName>.<serviceNamespace>.svc.cluster.local`.
 
 ## Связанные репозитории (gitlab.sadkomed.ru)
 
@@ -43,7 +88,10 @@ sadko_first/
 ├── templates/               # общие шаблоны для всех контуров
 ├── values.yaml              # ТОЛЬКО общие настройки (namespace, tlsSecret,
 │                            # defaults) + proxies: [] и internal: [] (ПУСТЫЕ)
-└── values-proxy-150.yaml    # прод: ingressClassName nginx + все прокси + internal
+├── values-proxy-20.yaml     # прод: ingressClassName nginx-20 + все прокси + internal
+├── values-proxy-69-69.yaml  # тест: ingressClassName nginx-69
+├── values-proxy-150.yaml    # legacy, не подключён ни к одному Application
+└── values-proxy-69.yaml     # legacy, не подключён ни к одному Application
 ```
 
 Правила:
@@ -58,6 +106,44 @@ sadko_first/
   `values-<имя>.yaml` в чарте + `<имя>.yaml` Application здесь. Прод не трогается.
 - **Добавить/изменить прокси** = правка values-файла нужного контроллера + push.
   Никаких `helm upgrade` руками.
+
+## Публикация приложений из кластера и TLS
+
+Ingress может брать TLS-секрет **только из своего namespace**. Секрет `sadkomed-tls`
+(wildcard) один и лежит в `default` — там же, где все Ingress-ы чарта `sadko_first`.
+
+**Принятый вариант:** приложение живёт в своём namespace, а его Ingress создаётся в
+`default` через список `internal:` values-файла нужного контроллера (Service `ExternalName`
+→ сервис приложения). Пример для тестового контура:
+
+```yaml
+internal:
+  - name: planka-test
+    host: planka-test.sadkomed.ru
+    serviceName: planka
+    serviceNamespace: planka-test
+    backendPort: 1337
+```
+
+Минус: новое приложение = манифесты приложения + строка в `internal:` (две правки);
+при удалении приложения строку надо убрать отдельно.
+
+**Отложено — `default-ssl-certificate` на контроллерах.** Когда приложений станет много
+(или появится ApplicationSet «каталог = приложение»), удобнее, чтобы Ingress лежал в
+каталоге самого приложения. Тогда в values контроллера добавляется:
+
+```yaml
+controller:
+  extraArgs:
+    default-ssl-certificate: default/sadkomed-tls
+```
+
+и Ingress приложения указывает `tls.hosts` **без** `secretName` — контроллер подставит
+wildcard из `default`. Секрет по namespace-ам не копировать: при замене сертификата
+придётся обновлять каждую копию. Порядок: сначала `ingress-nginx-69`, проверка
+(`openssl s_client -connect 192.168.69.69:443 -servername nosuchhost.sadkomed.ru` →
+`CN = *.sadkomed.ru`), потом `ingress-nginx-20`. Переход с `internal:` на свой Ingress —
+перенести Ingress в каталог приложения и убрать строку из `internal:`.
 
 ---
 
@@ -90,7 +176,7 @@ kubectl port-forward service/argocd-server -n argocd 8080:443
 
 | Ключ | Зачем |
 |------|-------|
-| `configs.params."server.insecure": true` | ArgoCD-server отдаёт HTTP без TLS — терминация TLS на ingress (хост argocd.sadkomed.ru идёт через proxy-150) |
+| `configs.params."server.insecure": true` | ArgoCD-server отдаёт HTTP без TLS — терминация TLS на ingress (хост argocd.sadkomed.ru идёт через proxy-20, `internal:`) |
 | `redis.image.*` | Явный образ redis с docker.io (обход дефолтного registry) |
 | `configs.cm."resource.exclusions"` | **Критично.** ArgoCD 3.x по умолчанию исключает из управления `EndpointSlice`, а чарт `sadko_first` создаёт их вручную (в них backend-IP всех прокси). Без переопределения ArgoCD молча НЕ будет применять изменения адресов. Наш список = дефолтный минус Endpoints/EndpointSlice |
 
@@ -114,7 +200,7 @@ Repositories → Connect repo (https + deploy token), либо секретом 
 ## 3. TLS-секрет для прокси
 
 Чарт `sadko_first` ссылается на секрет `sadkomed-tls` (wildcard *.sadkomed.ru)
-в namespace `default`. На чистом кластере создать до синка proxy-150:
+в namespace `default`. На чистом кластере создать до синка proxy-20 / proxy-69-69:
 
 ```bash
 kubectl create secret tls sadkomed-tls -n default --cert=fullchain.pem --key=privkey.pem
@@ -180,24 +266,25 @@ iscsi:
 ## 4. Применение Application-ов (порядок важен)
 
 ```bash
-kubectl apply -f metallb.yaml              # 1. MetalLB: пулы, BGP-пиринг
-kubectl apply -f ingress-nginx.yaml        # 2. прод-контроллер -> 192.168.253.150
-kubectl apply -f ingress-nginx-test.yaml   # 3. тестовый -> 192.168.253.69
-kubectl apply -f proxy-150.yaml            # 4. все прокси прод-контроллера
-kubectl apply -f truenas-iscsi.yaml        # 5. democratic-csi (нужен секрет из 3a)
+kubectl apply -f infra/metallb.yaml            # 1. MetalLB: пулы, BGP-пиринг
+kubectl apply -f infra/ingress-nginx-20.yaml   # 2. прод-контроллер -> 192.168.69.20
+kubectl apply -f infra/ingress-nginx-69.yaml   # 3. тестовый -> 192.168.69.69
+kubectl apply -f infra/proxy-20.yaml           # 4. маршруты прод-контроллера
+kubectl apply -f infra/proxy-69-69.yaml        # 5. маршруты тестового контроллера
+kubectl apply -f infra/truenas-iscsi.yaml      # 6. democratic-csi (нужен секрет из 3a)
 ```
 
-На чистом кластере перед шагом 2 создать namespace (в Application прода нет
-CreateNamespace): `kubectl create namespace ingress-nginx`.
+Namespace-ы контроллеров создаются сами (`CreateNamespace=true`). Каталог `legacy/`
+не применять.
 
 Проверка после каждого шага:
 
 ```bash
 kubectl get application -n argocd                       # все Synced/Healthy
-kubectl get svc -n ingress-nginx                        # EXTERNAL-IP 192.168.253.150
-kubectl get svc -n ingress-nginx-test                   # EXTERNAL-IP 192.168.253.69
+kubectl get svc -n ingress-nginx-20                     # EXTERNAL-IP 192.168.69.20
+kubectl get svc -n ingress-nginx-69                     # EXTERNAL-IP 192.168.69.69
 kubectl get ingress -n default | wc -l                  # ~60 ингрессов
-curl -kI https://192.168.253.150 -H "Host: grafana.sadkomed.ru"
+curl -kI https://192.168.69.20 -H "Host: grafana.sadkomed.ru"
 kubectl -n democratic-csi get pods -o wide              # 1 controller + node на каждом воркере
 kubectl get csidriver,sc | grep truenas
 ```
@@ -206,7 +293,9 @@ kubectl get csidriver,sc | grep truenas
 
 # Эксплуатация
 
-- **Добавить/поменять прокси** — правка `values-proxy-150.yaml` (или файла другого
+- **Сверка git и кластера** — `kubectl diff -f infra/`: пустой вывод = Application-ы в
+  кластере совпадают с файлами (никто не правил через UI мимо git).
+- **Добавить/поменять прокси** — правка `values-proxy-20.yaml` (или файла другого
   контура) в репе `k8s/helm.git`, push → ArgoCD синкает сам. `helm upgrade`/`helm
   uninstall` не использовать: selfHeal откатит ручные изменения. В `helm list`
   приложения ArgoCD не видны — это нормально: Арго не создаёт helm-релизов, он
@@ -221,7 +310,7 @@ kubectl get csidriver,sc | grep truenas
   усыновляет. Держать оба одновременно нельзя — будут драться за tracking-лейбл.
 - **Обновить ingress-nginx** — положить новую версию чарта в `k8s/ingress-nginx.git`
   (helm pull новой версии → закоммитить поверх), push. Сначала обкатать на
-  ingress-nginx-test (оба смотрят в одну репу — обновлять через отдельную ветку и
+  ingress-nginx-69 (все контроллеры смотрят в одну репу — обновлять через отдельную ветку и
   `targetRevision`, либо последовательно).
 - **Обновить ArgoCD** — `helm upgrade ... --version <новая>` с этим же values-файлом.
 - **Тонкость EndpointSlice:** kubernetes дописывает эндпойнтам `conditions: {}`,
@@ -230,7 +319,7 @@ kubectl get csidriver,sc | grep truenas
 - **Новые IP-пулы MetalLB** — в репе metallb; BGPAdvertisement `bgp-253`
   перечисляет пулы явно (если убрать поле `ipAddressPools` — анонсируются все).
 - **Запуск чарта без ArgoCD** (новый кластер, DR — НЕ боевой кластер под Арго):
-  `helm install proxy-150 ./sadko_first -n default -f values-proxy-150.yaml`;
+  `helm install proxy-20 ./sadko_first -n default -f values-proxy-20.yaml`;
   предпросмотр рендера: `helm template ... -f <values-файл>`.
 
 ## democratic-csi (TrueNAS iSCSI)
@@ -284,9 +373,10 @@ p99 хуже. Перед тестом файл заполнять записью
 `ethtool -S ens4f0np0 | grep -E 'rx_missed_errors|port.rx_discards'` — под нагрузкой не
 должны расти (база на 2026-10-07: 72291 / 2880). Растут — поднять до 8160 (максимум).
 
+**Бэкап томов:** `ssd/k8s` снапшотится (Periodic Snapshot Task) и реплицируется
+на другой NAS.
+
 **Риски (не решены):**
 
-- **Бэкапов нет** — нет Periodic Snapshot Tasks и репликации для `ssd/k8s`. Пул — одно
-  зеркало. До боевых БД: рекурсивные снапшоты `ssd/k8s` + репликация на второй TrueNAS.
 - TrueNAS — единая точка отказа: его перезагрузка подвешивает все поды с томами.
 - Только RWO. Для RWX нужен отдельный NFS-драйвер.
