@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: planka-test
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://gitlab.sadkomed.ru/k8s/argo_sadko.git
+    targetRevision: main
+    path: apps/planka/overlays/test
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: planka-test
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
