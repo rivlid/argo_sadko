@@ -9,4 +9,4 @@ configMapGenerator:
       - BASE_URL=https://planka.sadkomed.ru
 replicas:
   - name: planka
-    count: 0
+    count: 1
