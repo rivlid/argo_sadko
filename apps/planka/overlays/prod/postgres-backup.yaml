@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+spec:
+  schedule: "0 3 * * *"
+  timeZone: Europe/Moscow
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: backup
+              image: postgres:16.6-alpine
+              env:
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: planka-secrets
+                      key: postgres-password
+              command:
+                - sh
+                - -c
+                - |
+                  set -e
+                  dir=/backup/planka
+                  f=$dir/planka-$(date +%F_%H%M).dump
+                  mkdir -p $dir
+                  pg_dump -h postgres -U postgres -Fc planka > $f.tmp
+                  mv $f.tmp $f
+                  find $dir -name 'planka-*.dump' -mtime +30 -delete
+                  ls -lh $dir | tail -3
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+          volumes:
+            - name: backup
+              nfs:
+                server: 192.168.10.6
+                path: /mnt/data/backup/k8s

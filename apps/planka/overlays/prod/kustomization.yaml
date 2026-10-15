@@ -3,6 +3,7 @@ kind: Kustomization
 namespace: planka
 resources:
   - ../../base
+  - postgres-backup.yaml
 configMapGenerator:
   - name: planka-config
     literals:
