@@ -6,9 +6,9 @@ metadata:
 spec:
   project: default
   source: 
-    repoURL: https://gitlab.sadkomed.ru/k8s/helm.git
+    repoURL: https://gitlab.sadkomed.ru/k8s/argo_sadko.git
     targetRevision: main
-    path: sadko_first
+    path: charts/ingress-routes
     helm:
       releaseName: proxy-20
       valueFiles:
