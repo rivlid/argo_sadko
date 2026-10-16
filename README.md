@@ -17,6 +17,8 @@ argo_sadko/
 ├── README.md
 ├── argocd-helm-values.yaml   # values для установки/обновления самого ArgoCD
 ├── infra/                    # Application-ы инфраструктуры — применены в кластере
+├── charts/
+│   └── ingress-routes/       # чарт маршрутов контроллеров (бывший sadko_first из k8s/helm.git)
 ├── apps/                     # приложения: манифесты (kustomize) + их Application-ы
 │   └── planka/               #   см. раздел «Planka»
 └── legacy/                   # старая схема 192.168.253.x — НЕ ПРИМЕНЯТЬ
@@ -28,8 +30,8 @@ argo_sadko/
 | `infra/metallb.yaml` | Application `metallb-config`: MetalLB целиком (репа `metallb`, path `sadkomed_bgp`) |
 | `infra/ingress-nginx-20.yaml` | Application: **прод** ingress-контроллер, class `nginx-20`, IP 192.168.69.20, 3 реплики |
 | `infra/ingress-nginx-69.yaml` | Application: **тестовый** контроллер, class `nginx-69`, IP 192.168.69.69, 2 реплики |
-| `infra/proxy-20.yaml` | Application: маршруты прод-контроллера (чарт `sadko_first`, `values-proxy-20.yaml`) |
-| `infra/proxy-69-69.yaml` | Application: маршруты тестового контроллера (чарт `sadko_first`, `values-proxy-69-69.yaml`) |
+| `infra/proxy-20.yaml` | Application: маршруты прод-контроллера (чарт `charts/ingress-routes`, `values-proxy-20.yaml`) |
+| `infra/proxy-69-69.yaml` | Application: маршруты тестового контроллера (чарт `charts/ingress-routes`, `values-proxy-69-69.yaml`) |
 | `infra/truenas-iscsi.yaml` | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass-ы `truenas-iscsi` (Delete) и `truenas-iscsi-retain` (Retain, для БД); оба RWO, не default |
 | `apps/planka/planka-prod.yaml` | Application `planka`: прод Planka, namespace `planka`, path `apps/planka/overlays/prod` |
 | `apps/planka/planka-test.yaml` | Application `planka-test`: тестовый стенд, namespace `planka-test`, path `apps/planka/overlays/test` |
@@ -55,7 +57,7 @@ apps/<приложение>/
   версии через `images:` в overlay, либо в окне простоя.
 - Проверка рендера до коммита: `kubectl kustomize apps/<приложение>/overlays/<окружение>`.
 - Ingress приложения создаётся не в `apps/`, а строкой в `internal:` values-файла
-  нужного контроллера в `k8s/helm.git` (см. «Публикация приложений из кластера и TLS»).
+  нужного контроллера в `charts/ingress-routes/` (см. «Публикация приложений из кластера и TLS»).
 - Секреты в git не кладутся — создаются руками в namespace приложения до синка.
 - Тома баз — только на `truenas-iscsi-retain`.
 
@@ -66,7 +68,9 @@ apps/<приложение>/
 классы `nginx` / `nginx-test`). В кластере **не применены**, хранятся как справка.
 `kubectl apply -f legacy/` поднимет второй прод-контроллер и продублирует все прокси.
 Связанные хвосты той же схемы: values-файлы `values-proxy-150.yaml` / `values-proxy-69.yaml`
-в чарте `sadko_first` и пул `pool-253-150` в репе metallb.
+и пул `pool-253-150` в репе metallb. Application-ы legacy ссылаются на старую репу
+`k8s/helm.git` (чарт `sadko_first`) — values-файлы остались только там, в `charts/`
+их не переносили.
 
 ## Текущее состояние кластера (2026-10-15)
 
@@ -101,26 +105,29 @@ Application-ы в ArgoCD (все Synced/Healthy): `ingress-nginx-20`, `ingress-n
   (контроллер v1.10.1). Вендорим, потому что `kubernetes.github.io` /
   `argoproj.github.io` (GitHub Pages CDN) из pod-сети кластера недоступны
   (TLS handshake timeout), при этом сам `github.com` доступен.
-- `k8s/helm.git` — чарт `sadko_first`: реверс-прокси, каждый = Service +
-  EndpointSlice + Ingress.
+- `k8s/helm.git` — **архив**, не использовать. Бывший чарт `sadko_first`, перенесён
+  в `charts/ingress-routes` этой репы 2026-10-16. Нужен только как справка для `legacy/`.
 - репа `metallb` — манифесты MetalLB + конфигурация BGP (пулы, peer, advertisement).
 - `k8s/democratic-csi.git` — вендоренный чарт democratic-csi **0.15.1**
   (`democratic-csi.github.io` — тот же GitHub Pages CDN). Образ драйвера
   v1.9.5 задан в `truenas-iscsi.yaml`. Обновление: `helm pull --version <новая> --untar`
   на ansible13 → закоммитить поверх.
 
-## Устройство чарта sadko_first: один values-файл = один контроллер
+## Устройство чарта ingress-routes: один values-файл = один контроллер
+
+Чарт создаёт Ingress-маршруты контроллера: для `proxies:` — Service + EndpointSlice
+на внешний IP + Ingress, для `internal:` — Service `ExternalName` на сервис в кластере +
+Ingress. Application-ы `proxy-20` / `proxy-69-69` берут его из этой же репы
+(`path: charts/ingress-routes`).
 
 ```
-sadko_first/
+charts/ingress-routes/
 ├── Chart.yaml
 ├── templates/               # общие шаблоны для всех контуров
 ├── values.yaml              # ТОЛЬКО общие настройки (namespace, tlsSecret,
 │                            # defaults) + proxies: [] и internal: [] (ПУСТЫЕ)
 ├── values-proxy-20.yaml     # прод: ingressClassName nginx-20 + все прокси + internal
-├── values-proxy-69-69.yaml  # тест: ingressClassName nginx-69
-├── values-proxy-150.yaml    # legacy, не подключён ни к одному Application
-└── values-proxy-69.yaml     # legacy, не подключён ни к одному Application
+└── values-proxy-69-69.yaml  # тест: ingressClassName nginx-69
 ```
 
 Правила:
@@ -139,7 +146,7 @@ sadko_first/
 ## Публикация приложений из кластера и TLS
 
 Ingress может брать TLS-секрет **только из своего namespace**. Секрет `sadkomed-tls`
-(wildcard) один и лежит в `default` — там же, где все Ingress-ы чарта `sadko_first`.
+(wildcard) один и лежит в `default` — там же, где все Ingress-ы чарта `ingress-routes`.
 
 **Принятый вариант:** приложение живёт в своём namespace, а его Ingress создаётся в
 `default` через список `internal:` values-файла нужного контроллера (Service `ExternalName`
@@ -207,7 +214,7 @@ kubectl port-forward service/argocd-server -n argocd 8080:443
 |------|-------|
 | `configs.params."server.insecure": true` | ArgoCD-server отдаёт HTTP без TLS — терминация TLS на ingress (хост argocd.sadkomed.ru идёт через proxy-20, `internal:`) |
 | `redis.image.*` | Явный образ redis с docker.io (обход дефолтного registry) |
-| `configs.cm."resource.exclusions"` | **Критично.** ArgoCD 3.x по умолчанию исключает из управления `EndpointSlice`, а чарт `sadko_first` создаёт их вручную (в них backend-IP всех прокси). Без переопределения ArgoCD молча НЕ будет применять изменения адресов. Наш список = дефолтный минус Endpoints/EndpointSlice |
+| `configs.cm."resource.exclusions"` | **Критично.** ArgoCD 3.x по умолчанию исключает из управления `EndpointSlice`, а чарт `ingress-routes` создаёт их вручную (в них backend-IP всех прокси). Без переопределения ArgoCD молча НЕ будет применять изменения адресов. Наш список = дефолтный минус Endpoints/EndpointSlice |
 
 **Правило:** любые настройки ArgoCD меняются ТОЛЬКО в этом файле с последующим
 `helm upgrade argocd argo/argo-cd -n argocd --version <тек. версия> -f argocd-helm-values.yaml`.
@@ -228,7 +235,7 @@ Repositories → Connect repo (https + deploy token), либо секретом 
 
 ## 3. TLS-секрет для прокси
 
-Чарт `sadko_first` ссылается на секрет `sadkomed-tls` (wildcard *.sadkomed.ru)
+Чарт `ingress-routes` ссылается на секрет `sadkomed-tls` (wildcard *.sadkomed.ru)
 в namespace `default`. На чистом кластере создать до синка proxy-20 / proxy-69-69:
 
 ```bash
@@ -326,8 +333,8 @@ kubectl get csidriver,sc | grep truenas
 
 - **Сверка git и кластера** — `kubectl diff -f infra/`: пустой вывод = Application-ы в
   кластере совпадают с файлами (никто не правил через UI мимо git).
-- **Добавить/поменять прокси** — правка `values-proxy-20.yaml` (или файла другого
-  контура) в репе `k8s/helm.git`, push → ArgoCD синкает сам. `helm upgrade`/`helm
+- **Добавить/поменять прокси** — правка `charts/ingress-routes/values-proxy-20.yaml`
+  (или файла другого контура), push → ArgoCD синкает сам. `helm upgrade`/`helm
   uninstall` не использовать: selfHeal откатит ручные изменения. В `helm list`
   приложения ArgoCD не видны — это нормально: Арго не создаёт helm-релизов, он
   рендерит чарт и применяет манифесты напрямую; история — в UI (History and Rollback).
@@ -350,7 +357,7 @@ kubectl get csidriver,sc | grep truenas
 - **Новые IP-пулы MetalLB** — в репе metallb; BGPAdvertisement `bgp-253`
   перечисляет пулы явно (если убрать поле `ipAddressPools` — анонсируются все).
 - **Запуск чарта без ArgoCD** (новый кластер, DR — НЕ боевой кластер под Арго):
-  `helm install proxy-20 ./sadko_first -n default -f values-proxy-20.yaml`;
+  `helm install proxy-20 ./charts/ingress-routes -n default -f charts/ingress-routes/values-proxy-20.yaml`;
   предпросмотр рендера: `helm template ... -f <values-файл>`.
 
 ## democratic-csi (TrueNAS iSCSI)
@@ -545,7 +552,7 @@ kubectl -n <ns> delete pod loader
 
 ### Тонкости
 
-- Ingress — через `internal:` чарта `sadko_first` (`proxy-body-size: 0`, websocket
+- Ingress — через `internal:` чарта `ingress-routes` (`proxy-body-size: 0`, websocket
   работает без доп. настроек: socket.io пингует каждые 25 с, таймаут ingress 60 с).
   Если появится `502 upstream sent too big header` — шаблону `internal:` нужна
   поддержка аннотаций (`proxy-buffer-size`), в докере стоял `16k`.
