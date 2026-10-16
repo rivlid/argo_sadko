@@ -1,0 +1,12 @@
+apiVersion: v2
+name: ingress-routes
+description: >-
+    Роуты на внешние и внутренние сервисы,
+    тестовый и продовый.
+type: application
+version: 0.2.0
+appVersion: "1.0"
+
+maintainers:
+  - name: Roman Kalsin
+    email: r.kalsin@sadkomed.ru

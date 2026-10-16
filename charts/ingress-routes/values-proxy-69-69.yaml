@@ -1,0 +1,25 @@
+ingressClassName: nginx-69
+proxies:
+  - name: sema
+    host: sema.sadkomed.ru
+    backendIP: 192.168.9.98
+    backendPort: 3000
+  - name: elma-test69
+    host: elma-test.sadkomed.ru
+    backendIP: 192.168.253.202
+    backendPort: 8000
+    proxyRedirectFrom: "http://elma-test.sadkomed.ru:8000/"
+    proxyRedirectTo: "https://elma-test.sadkomed.ru/"
+# Внутренние сервисы кластера
+internal:  
+  - name: argo-test
+    host: argo-test.sadkomed.ru
+    serviceName: argocd-server
+    serviceNamespace: argocd
+    backendPort: 80
+
+  - name: planka-test
+    host: planka-test.sadkomed.ru
+    serviceName: planka
+    serviceNamespace: planka-test
+    backendPort: 1337

@@ -17,6 +17,8 @@ argo_sadko/
 ├── README.md
 ├── argocd-helm-values.yaml   # values для установки/обновления самого ArgoCD
 ├── infra/                    # Application-ы инфраструктуры — применены в кластере
+├── apps/                     # приложения: манифесты (kustomize) + их Application-ы
+│   └── planka/               #   см. раздел «Planka»
 └── legacy/                   # старая схема 192.168.253.x — НЕ ПРИМЕНЯТЬ
 ```
 
@@ -29,6 +31,33 @@ argo_sadko/
 | `infra/proxy-20.yaml` | Application: маршруты прод-контроллера (чарт `sadko_first`, `values-proxy-20.yaml`) |
 | `infra/proxy-69-69.yaml` | Application: маршруты тестового контроллера (чарт `sadko_first`, `values-proxy-69-69.yaml`) |
 | `infra/truenas-iscsi.yaml` | Application: democratic-csi (TrueNAS iSCSI, драйвер `freenas-api-iscsi`), namespace `democratic-csi`, StorageClass-ы `truenas-iscsi` (Delete) и `truenas-iscsi-retain` (Retain, для БД); оба RWO, не default |
+| `apps/planka/planka-prod.yaml` | Application `planka`: прод Planka, namespace `planka`, path `apps/planka/overlays/prod` |
+| `apps/planka/planka-test.yaml` | Application `planka-test`: тестовый стенд, namespace `planka-test`, path `apps/planka/overlays/test` |
+
+### apps/ — как устроены приложения
+
+В отличие от `infra/`, манифесты приложений лежат **в этой же репе**: Application
+указывает `repoURL` на `k8s/argo_sadko.git` и `path` на overlay. Каждое приложение —
+kustomize:
+
+```
+apps/<приложение>/
+├── <приложение>-prod.yaml    # Application прода  (kubectl apply руками, как infra/)
+├── <приложение>-test.yaml    # Application теста
+├── base/                     # общее для всех окружений: Deployment, StatefulSet, Service, PVC
+└── overlays/
+    ├── prod/                 # отличия прода: namespace, BASE_URL/хосты, replicas, бэкап
+    └── test/                 # отличия теста
+```
+
+- Версия образа, ресурсы, тома — в `base/`, меняются один раз для всех окружений.
+  Правка base затрагивает **и прод, и тест** — обкатывать на тесте, временно разведя
+  версии через `images:` в overlay, либо в окне простоя.
+- Проверка рендера до коммита: `kubectl kustomize apps/<приложение>/overlays/<окружение>`.
+- Ingress приложения создаётся не в `apps/`, а строкой в `internal:` values-файла
+  нужного контроллера в `k8s/helm.git` (см. «Публикация приложений из кластера и TLS»).
+- Секреты в git не кладутся — создаются руками в namespace приложения до синка.
+- Тома баз — только на `truenas-iscsi-retain`.
 
 ### legacy/ — не применять
 
@@ -39,15 +68,15 @@ argo_sadko/
 Связанные хвосты той же схемы: values-файлы `values-proxy-150.yaml` / `values-proxy-69.yaml`
 в чарте `sadko_first` и пул `pool-253-150` в репе metallb.
 
-## Текущее состояние кластера (2026-10-08)
+## Текущее состояние кластера (2026-10-15)
 
 Application-ы в ArgoCD (все Synced/Healthy): `ingress-nginx-20`, `ingress-nginx-69`,
-`metallb-config`, `proxy-20`, `proxy-69-69`, `truenas-iscsi`.
+`metallb-config`, `proxy-20`, `proxy-69-69`, `truenas-iscsi`, `planka`, `planka-test`.
 
 | Контур | Контроллер | Класс | IP (пул MetalLB) | Маршруты |
 |--------|-----------|-------|------------------|----------|
-| прод | `ingress-nginx-20` | `nginx-20` | 192.168.69.20 (`pool-69-20`) | `proxy-20` → `values-proxy-20.yaml`: ~60 внешних прокси + internal (headlamp, grafana-k8s, argocd) |
-| тест | `ingress-nginx-69` | `nginx-69` | 192.168.69.69 (`pool-69-69`) | `proxy-69-69` → `values-proxy-69-69.yaml`: sema, elma-test + internal (argo-test) |
+| прод | `ingress-nginx-20` | `nginx-20` | 192.168.69.20 (`pool-69-20`) | `proxy-20` → `values-proxy-20.yaml`: ~60 внешних прокси + internal (headlamp, planka, grafana-k8s, argocd) |
+| тест | `ingress-nginx-69` | `nginx-69` | 192.168.69.69 (`pool-69-69`) | `proxy-69-69` → `values-proxy-69-69.yaml`: sema, elma-test + internal (argo-test, planka-test) |
 
 ### Как связаны MetalLB, контроллер и маршруты
 
@@ -272,10 +301,12 @@ kubectl apply -f infra/ingress-nginx-69.yaml   # 3. тестовый -> 192.168.
 kubectl apply -f infra/proxy-20.yaml           # 4. маршруты прод-контроллера
 kubectl apply -f infra/proxy-69-69.yaml        # 5. маршруты тестового контроллера
 kubectl apply -f infra/truenas-iscsi.yaml      # 6. democratic-csi (нужен секрет из 3a)
+kubectl apply -f apps/planka/planka-prod.yaml  # 7. Planka (нужен секрет и данные, см. «Planka»)
 ```
 
 Namespace-ы контроллеров создаются сами (`CreateNamespace=true`). Каталог `legacy/`
-не применять.
+не применять. Приложения из `apps/` на чистом кластере поднимутся пустыми — данные
+восстанавливаются из бэкапа по инструкции приложения.
 
 Проверка после каждого шага:
 
@@ -406,3 +437,119 @@ p99 хуже. Перед тестом файл заполнять записью
 
 - TrueNAS — единая точка отказа: его перезагрузка подвешивает все поды с томами.
 - Только RWO. Для RWX нужен отдельный NFS-драйвер.
+
+## Planka
+
+Канбан-доски, `planka.sadkomed.ru`. Перенесена из docker-compose (VM 192.168.253.33,
+v1.26.3) в k8s и обновлена до **v2.2.1** 2026-10-12. Старая VM выключена.
+
+| | Прод | Тест |
+|---|---|---|
+| Application | `planka` (`apps/planka/planka-prod.yaml`) | `planka-test` (`apps/planka/planka-test.yaml`) |
+| Namespace | `planka` | `planka-test` |
+| Хост | `planka.sadkomed.ru` → 192.168.69.20 | `planka-test.sadkomed.ru` → 192.168.69.69 |
+| Маршрут | `internal:` в `values-proxy-20.yaml` | `internal:` в `values-proxy-69-69.yaml` |
+| Бэкап `pg_dump` | да, CronJob `postgres-backup` | нет |
+
+**Ресурсы (`base/`):**
+
+- `StatefulSet postgres` — `postgres:16.6-alpine`, PVC `data-postgres-0` 5Gi на
+  `truenas-iscsi-retain`. `PGDATA` в подкаталоге `pgdata` (в корне ext4 лежит `lost+found`).
+- `Deployment planka` — `ghcr.io/plankanban/planka:2.2.1`, 1 реплика, `strategy: Recreate`
+  (том RWO). init-контейнер ждёт Postgres. `fsGroup: 1000` (planka работает от `node`).
+- PVC `planka-data` 10Gi на `truenas-iscsi-retain`, смонтирован целиком в `/app/data`:
+  `protected/user-avatars`, `protected/background-images`, `private/attachments`.
+- `BASE_URL` — из ConfigMap `planka-config`, генерируется в overlay (`configMapGenerator`,
+  имя с хэшем — смена `BASE_URL` сама перезапускает под). `TRUST_PROXY=true` (в v2 числа
+  `1`/`0` не принимаются).
+
+**Секрет** (руками, до синка, в каждом namespace):
+
+```bash
+kubectl -n planka create secret generic planka-secrets \
+  --from-literal=postgres-password=$(openssl rand -hex 24) \
+  --from-literal=secret-key=$(openssl rand -hex 64)
+```
+
+Пароль — только hex: он подставляется в `DATABASE_URL`, спецсимволы сломают URL.
+Новый `SECRET_KEY` = все пользователи перелогиниваются, данные не страдают.
+
+### Бэкап
+
+- **База:** CronJob `postgres-backup` (`overlays/prod/postgres-backup.yaml`), ежедневно в
+  03:00 МСК, `pg_dump -Fc` на NFS `192.168.10.6:/mnt/data/backup/k8s/planka/`
+  (`planka-<дата>_<время>.dump`), хранение 30 дней. NFS монтирует kubelet — на всех нодах
+  нужен `nfs-common`. Ручной запуск:
+  `kubectl -n planka create job backup-manual --from=cronjob/postgres-backup`.
+- **Файлы:** отдельного бэкапа нет — zvol `planka-data` попадает в снапшоты `ssd/k8s`
+  (ежечасно/ежедневно) с репликацией на второй NAS. Вложения пишутся один раз и не
+  меняются, снапшот для них консистентен. Для базы снапшот — только запасной вариант
+  (crash-consistent), основной — `pg_dump`.
+- Восстановление проверено 2026-10-15 (ночной дамп прода → planka-test).
+
+### Восстановление базы из дампа
+
+```bash
+kubectl -n <ns> scale deploy planka --replicas=0     # или count: 0 в overlay — иначе selfHeal вернёт
+kubectl -n <ns> exec -i postgres-0 -- sh -c 'dropdb -U postgres planka && createdb -U postgres planka'
+kubectl -n <ns> exec -i postgres-0 -- pg_restore -U postgres -d planka --no-owner --exit-on-error < planka-<дата>.dump
+```
+
+Затем вернуть реплику. Дампы видны с `k8s-master-01` (NFS смонтирован в `/mnt/backup/etcd`,
+каталог `planka/`). На проде `scale` откатит selfHeal — останавливать через `count: 0` в
+`overlays/prod/kustomization.yaml`.
+
+### Временный под для работы с томом
+
+Нужен для заливки/перекладки файлов (planka должна быть остановлена — том RWO):
+
+```bash
+kubectl -n <ns> run loader --image=busybox --restart=Never --overrides='{"spec":{"containers":[{"name":"loader","image":"busybox","command":["sleep","3600"],"volumeMounts":[{"name":"d","mountPath":"/d"}]}],"volumes":[{"name":"d","persistentVolumeClaim":{"claimName":"planka-data"}}]}}'
+kubectl -n <ns> exec loader -- ls -la /d          # после работы: chown -R 1000:1000 /d
+kubectl -n <ns> delete pod loader
+```
+
+### Обновление v1 → v2 (как делали, для справки)
+
+Официальная процедура — https://docs.planka.cloud/docs/upgrade-to-v2/docker — адаптирована
+под k8s. Ключевые грабли:
+
+1. **`db/upgrade.js` в 2.2.x сломан для v1:** из списка переносимых в схему `v1` таблиц
+   пропала `identity_provider_user` (SSO убрали из Community), а миграция `version_2` её
+   создаёт → `relation "identity_provider_user" already exists`. Транзакция откатывается,
+   база остаётся v1. **Конвертировать образом 2.1.0**, потом запускать 2.2.x — его миграции
+   (удаление SSO, 2FA и т.д.) применятся при старте (`start.sh` → `db/init.js` → `migrate.latest`).
+2. **Отметки «срок выполнен» сбрасываются.** До конвертации сохранить
+   `CREATE SCHEMA keep; CREATE TABLE keep.card_due AS SELECT id, is_due_date_completed FROM public.card;`,
+   после — `UPDATE card c SET is_due_completed = k.is_due_date_completed FROM keep.card_due k WHERE c.id = k.id AND k.is_due_date_completed IS NOT NULL;`
+   и `DROP SCHEMA keep CASCADE`.
+3. **upgrade.js работает со старыми путями.** Конвертация — разовым Job (не в git) с образом
+   2.1.0 и старой раскладкой монтирований через `subPath`: `/app/public/user-avatars`,
+   `/app/public/project-background-images`, `/app/public/background-images` (заранее
+   `cp -a project-background-images background-images`), `/app/private/attachments`;
+   команда `npm run db:upgrade && npm run db:migrate`, env как у Deployment.
+4. После Job — переложить каталоги на томе в раскладку v2 (`mv` в `protected/` и
+   `private/`, `chown -R 1000:1000`), в base — образ 2.2.x, `TRUST_PROXY=true`, одно
+   монтирование `/app/data`.
+
+Порядок: бэкап → planka `count: 0` → сохранить `keep` → копия фонов → Job 2.1.0 →
+вернуть отметки → перекладка каталогов → коммит (образ/монтирование/`count: 1`). Прод
+занял ~30 минут простоя, обкатывалось на planka-test.
+
+### Обновление внутри v2
+
+Минорные версии (2.2.x → 2.3.x) — смена тега образа в `base/planka.yaml`, миграции
+применятся при старте. Перед обновлением — ручной бэкап (`create job --from=cronjob`),
+сначала проверить на planka-test (она на той же base — временно развести образы через
+`images:` в `overlays/test/kustomization.yaml`).
+
+### Тонкости
+
+- Ingress — через `internal:` чарта `sadko_first` (`proxy-body-size: 0`, websocket
+  работает без доп. настроек: socket.io пингует каждые 25 с, таймаут ingress 60 с).
+  Если появится `502 upstream sent too big header` — шаблону `internal:` нужна
+  поддержка аннотаций (`proxy-buffer-size`), в докере стоял `16k`.
+- planka-test содержит копию прода (пользователи, данные) — изменения в ней на прод
+  не попадают.
+- Лицензия Planka 2 — Fair Use License; Community-редакция бесплатна для внутреннего
+  использования. SSO/OIDC — только в Pro (у нас не используется).
