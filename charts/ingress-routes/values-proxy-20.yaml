@@ -18,25 +18,9 @@ proxies:
     backendPort: 443
     backendProtocol: HTTPS
 
-  - name: rmail
-    host: rmail.sadkomed.ru
-    backendIP: 192.168.253.156
-    backendPort: 443
-    backendProtocol: HTTPS
-
-  - name: relma
-    host: relma.sadkomed.ru
-    backendIP: 192.168.253.200
-    backendPort: 8000
-
   - name: semaphore
     host: semaphore.sadkomed.ru
     backendIP: 192.168.9.98
-    backendPort: 3000
-
-  - name: rgrafana
-    host: rgrafana.sadkomed.ru
-    backendIP: 192.168.253.40
     backendPort: 3000
 
   - name: elma
